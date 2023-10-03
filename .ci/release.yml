@@ -103,3 +103,19 @@ jobs:
       packagesToPush: '$(NugetPkgPath)'
       nuGetFeedType: external
       publishFeedCredentials: PSGalleryPush
+
+- job: GitHubReleaseDraft
+  dependsOn: ${{ parameters.jobName2 }}
+  pool:
+    name: PowerShell1ES
+    demands:
+    - ImageOverride -equals PSMMS2019-Secure
+  displayName: Create GitHub Draft release
+
+  variables:
+  - group: 'Azure Blob variable group'
+  - group: 'AzDevOpsArtifacts'
+  - group: ReleasePipelineSecrets
+  dependsOn: AzureBlobPublic
+  steps:
+  - template: release-CreateGitHubDraft.yml
