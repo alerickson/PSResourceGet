@@ -307,7 +307,6 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
             }
 
             results = InstallVersion(packageName, packageVersion, out errRecord);
-      
             return results;
         }
 
