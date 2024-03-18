@@ -978,7 +978,6 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
                     "ErrorCreatingTempDir",
                     ErrorCategory.InvalidData,
                     this);
-
                 return;
             }
 
@@ -1059,7 +1058,6 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
         {
             /**
             Example PrivateData
-
             PrivateData = @{
                 PSData = @{
                     # Tags applied to this module. These help with module discovery in online galleries.
@@ -1093,7 +1091,6 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
 
             string tagsString = string.Join(", ", tags.Select(item => "'" + item + "'"));
             string tagLine = tags.Length != 0 ? $"Tags = @({tagsString})"  : "# Tags = @()";
-
             string licenseUriLine = licenseUri == null ? "# LicenseUri = ''" : $"LicenseUri = '{licenseUri.ToString()}'";
             string projectUriLine = projectUri == null ? "# ProjectUri = ''" : $"ProjectUri = '{projectUri.ToString()}'";
             string iconUriLine = iconUri == null ? "# IconUri = ''" : $"IconUri = '{iconUri.ToString()}'";
@@ -1105,7 +1102,6 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
 
             string externalModuleDependenciesString = string.Join(", ", externalModuleDependencies.Select(item => "'" + item + "'"));
             string externalModuleDependenciesLine = externalModuleDependencies.Length == 0 ? "# ExternalModuleDependencies = @()" : $"ExternalModuleDependencies = @({externalModuleDependenciesString})";
-
             string initialPrivateDataString = "PrivateData = @{" + System.Environment.NewLine + "PSData = @{" + System.Environment.NewLine;
 
             string privateDataString = $@"
@@ -1173,7 +1169,6 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
                     {
                         leftBracket--;
                     }
-
                     if (leftBracket == 0)
                     {
                         privateDataEndLine = i;
@@ -1189,7 +1184,6 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
                     "PrivateDataEntryParsingError",
                     ErrorCategory.InvalidOperation,
                     this);
-
                 return false;
             }
 
