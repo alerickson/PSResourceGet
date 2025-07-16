@@ -255,32 +255,37 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
             FindResults findResponse = new FindResults();
             errRecord = null;
 
-            WildcardPattern pkgNamePattern = new WildcardPattern($"{packageName}.*", WildcardOptions.IgnoreCase);
             NuGetVersion latestVersion = new NuGetVersion("0.0.0.0");
             String latestVersionPath = String.Empty;
             string actualPkgName = packageName;
 
+            // this regex pattern matches packageName followed by a version (4 digit or 3 with prerelease word)
+            string regexPattern = $"{packageName}" + @"(\.\d+){1,3}(?:[a-zA-Z0-9-.]+|.\d)?\.nupkg";
+            _cmdletPassedIn.WriteDebug($"package file name pattern to be searched for is: {regexPattern}");
+
             foreach (string path in Directory.GetFiles(Repository.Uri.LocalPath))
             {
                 string packageFullName = Path.GetFileName(path);
-
-                if (!String.IsNullOrEmpty(packageFullName) && pkgNamePattern.IsMatch(packageFullName))
+                bool isMatch = Regex.IsMatch(packageFullName, regexPattern, RegexOptions.IgnoreCase);
+                if (!isMatch)
                 {
-                    NuGetVersion nugetVersion = GetInfoFromFileName(packageFullName: packageFullName, packageName: packageName, actualName: out actualPkgName, out errRecord);
-                    _cmdletPassedIn.WriteDebug($"Version parsed as '{nugetVersion}'");
+                    continue;
+                }
 
-                    if (errRecord != null)
-                    {
-                        return findResponse;
-                    }
+                NuGetVersion nugetVersion = GetInfoFromFileName(packageFullName: packageFullName, packageName: packageName, actualName: out actualPkgName, out errRecord);
+                _cmdletPassedIn.WriteDebug($"Version parsed as '{nugetVersion}'");
 
-                    if ((!nugetVersion.IsPrerelease || includePrerelease) && (nugetVersion > latestVersion))
+                if (errRecord != null)
+                {
+                    return findResponse;
+                }
+
+                if ((!nugetVersion.IsPrerelease || includePrerelease) && (nugetVersion > latestVersion))
+                {
+                    if (nugetVersion > latestVersion)
                     {
-                        if (nugetVersion > latestVersion)
-                        {
-                            latestVersion = nugetVersion;
-                            latestVersionPath = path;
-                        }
+                        latestVersion = nugetVersion;
+                        latestVersionPath = path;
                     }
                 }
             }
@@ -371,29 +376,35 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
                 return findResponse;
             }
 
-            WildcardPattern pkgNamePattern = new WildcardPattern($"{packageName}.*", WildcardOptions.IgnoreCase);
+            // this regex pattern matches packageName followed by the requested version
+            string regexPattern = $"{packageName}.{requiredVersion.ToNormalizedString()}" + @".nupkg";
+            _cmdletPassedIn.WriteDebug($"pattern is: {regexPattern}");
             string pkgPath = String.Empty;
             string actualPkgName = String.Empty;
+
             foreach (string path in Directory.GetFiles(Repository.Uri.LocalPath))
             {
                 string packageFullName = Path.GetFileName(path);
-                if (!String.IsNullOrEmpty(packageFullName) && pkgNamePattern.IsMatch(packageFullName))
+                bool isMatch = Regex.IsMatch(packageFullName, regexPattern, RegexOptions.IgnoreCase);
+                if (!isMatch)
                 {
-                    NuGetVersion nugetVersion = GetInfoFromFileName(packageFullName: packageFullName, packageName: packageName, actualName: out actualPkgName, out errRecord);
-                    _cmdletPassedIn.WriteDebug($"'{packageName}' version parsed as '{nugetVersion}'");
+                    continue;
+                }
 
-                    if (errRecord != null)
-                    {
-                        return findResponse;
-                    }
+                NuGetVersion nugetVersion = GetInfoFromFileName(packageFullName: packageFullName, packageName: packageName, actualName: out actualPkgName, out errRecord);
+                _cmdletPassedIn.WriteDebug($"Version parsed as '{nugetVersion}'");
 
-                    if (nugetVersion == requiredVersion)
-                    {
-                        _cmdletPassedIn.WriteDebug("Found matching version");
-                        string pkgFullName = $"{actualPkgName}.{nugetVersion.ToString()}.nupkg";
-                        pkgPath = Path.Combine(Repository.Uri.LocalPath, pkgFullName);
-                        break;
-                    }
+                if (errRecord != null)
+                {
+                    return findResponse;
+                }
+
+                if (nugetVersion == requiredVersion)
+                {
+                    _cmdletPassedIn.WriteDebug("Found matching version");
+                    string pkgFullName = $"{actualPkgName}.{nugetVersion.ToString()}.nupkg";
+                    pkgPath = path;
+                    break;
                 }
             }
 
@@ -649,9 +660,10 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
                 _cmdletPassedIn.WriteDebug($"Extracting '{zipFilePath}' to '{tempDiscoveryPath}'");
                 System.IO.Compression.ZipFile.ExtractToDirectory(zipFilePath, tempDiscoveryPath);
 
-                string psd1FilePath = Path.Combine(tempDiscoveryPath, $"{packageName}.psd1");
-                string ps1FilePath = Path.Combine(tempDiscoveryPath, $"{packageName}.ps1");
-                string nuspecFilePath = Path.Combine(tempDiscoveryPath, $"{packageName}.nuspec");
+                string psd1FilePath = String.Empty;
+                string ps1FilePath = String.Empty;
+                string nuspecFilePath = String.Empty;
+                Utils.GetMetadataFilesFromPath(tempDiscoveryPath, packageName, out psd1FilePath, out ps1FilePath, out nuspecFilePath, out string properCasingPkgName);
 
                 List<string> pkgTags = new List<string>();
 
@@ -676,7 +688,7 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
                     pkgMetadata.Add("ProjectUri", projectUri);
                     pkgMetadata.Add("IconUri", iconUri);
                     pkgMetadata.Add("ReleaseNotes", releaseNotes);
-                    pkgMetadata.Add("Id", packageName);
+                    pkgMetadata.Add("Id", properCasingPkgName);
                     pkgMetadata.Add(_fileTypeKey, Utils.MetadataFileType.ModuleManifest);
 
                     pkgTags.AddRange(pkgHashTags);
@@ -696,7 +708,7 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
                     }
 
                     pkgMetadata = parsedScript.ToHashtable();
-                    pkgMetadata.Add("Id", packageName);
+                    pkgMetadata.Add("Id", properCasingPkgName);
                     pkgMetadata.Add(_fileTypeKey, Utils.MetadataFileType.ScriptFile);
                     pkgTags.AddRange(pkgMetadata["Tags"] as string[]);
 
@@ -882,7 +894,7 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
 
             string[] packageWithoutName = packageFullName.ToLower().Split(new string[]{ $"{packageName.ToLower()}." }, StringSplitOptions.RemoveEmptyEntries);
             string packageVersionAndExtension = packageWithoutName[0];
-            string[] originalFileNameParts = packageFullName.Split(new string[]{ $".{packageVersionAndExtension}" }, StringSplitOptions.RemoveEmptyEntries);
+            string[] originalFileNameParts = packageFullName.ToLower().Split(new string[]{ $".{packageVersionAndExtension.ToLower()}" }, StringSplitOptions.RemoveEmptyEntries);
             actualName = String.IsNullOrEmpty(originalFileNameParts[0]) ? packageName : originalFileNameParts[0];
             int extensionDot = packageVersionAndExtension.LastIndexOf('.');
             string version = packageVersionAndExtension.Substring(0, extensionDot);

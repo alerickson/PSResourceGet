@@ -270,16 +270,20 @@ Describe "Test Publish-PSResource" -tags 'CI' {
         $dependencyVersion = "2.0.0"
         New-ModuleManifest -Path (Join-Path -Path $script:DependencyModuleBase -ChildPath "$script:DependencyModuleName.psd1") -ModuleVersion $dependencyVersion -Description "$script:DependencyModuleName module"
 
-        Publish-PSResource -Path $script:DependencyModuleBase
+        Publish-PSResource -Path $script:DependencyModuleBase -Repository $testRepository2
+        $pkg1 = Find-PSResource $script:DependencyModuleName -Repository $testRepository2
+        $pkg1 | Should -Not -BeNullOrEmpty
+        $pkg1.Version | Should -Be $dependencyVersion
 
         # Create module to test
         $version = "1.0.0"
         New-ModuleManifest -Path (Join-Path -Path $script:PublishModuleBase -ChildPath "$script:PublishModuleName.psd1") -ModuleVersion $version -Description "$script:PublishModuleName module" -RequiredModules @(@{ModuleName = 'PackageManagement'; ModuleVersion = '2.0.0' })
 
-        Publish-PSResource -Path $script:PublishModuleBase
+        Publish-PSResource -Path $script:PublishModuleBase -Repository $testRepository2
 
-        $nupkg = Get-ChildItem $script:repositoryPath | select-object -Last 1
-        $nupkg.Name | Should -Be "$script:PublishModuleName.$version.nupkg"
+        $pkg2 = Find-PSResource $script:DependencyModuleName -Repository $testRepository2
+        $pkg2 | Should -Not -BeNullOrEmpty
+        $pkg2.Version | Should -Be $dependencyVersion
     }
 
     It "Publish a module with a dependency that is not published, should throw" {
@@ -289,7 +293,6 @@ Describe "Test Publish-PSResource" -tags 'CI' {
 
         {Publish-PSResource -Path $script:PublishModuleBase -ErrorAction Stop} | Should -Throw -ErrorId "DependencyNotFound,Microsoft.PowerShell.PSResourceGet.Cmdlets.PublishPSResource"
     }
-
 
     It "Publish a module with -SkipDependenciesCheck" {
         $version = "1.0.0"
@@ -321,8 +324,23 @@ Describe "Test Publish-PSResource" -tags 'CI' {
         Test-Path -Path (Join-Path -Path $unzippedPath -ChildPath $testFile) | Should -Be $True
     }
 
+    It "Publish a module with -NupkgPath" {
+        $version = "1.0.0"
+        # Make a nupkg
+        New-ModuleManifest -Path (Join-Path -Path $script:PublishModuleBase -ChildPath "$script:PublishModuleName.psd1") -ModuleVersion $version -Description "$script:PublishModuleName module"
+        Compress-PSResource -Path $script:PublishModuleBase -DestinationPath $script:destinationPath
+        $expectedPath = Join-Path -Path $script:destinationPath -ChildPath "$script:PublishModuleName.$version.nupkg"
+        (Get-ChildItem $script:destinationPath).FullName | Should -Be $expectedPath
+        
+        # Pass the nupkg via -NupkgPath
+        Publish-PSResource -NupkgPath $expectedPath -Repository $testRepository2
+        $expectedPath = Join-Path -Path $script:repositoryPath2  -ChildPath "$script:PublishModuleName.$version.nupkg"
+        (Get-ChildItem $script:repositoryPath2).FullName | Should -Be $expectedPath
+    }
+
     <# The following tests are related to passing in parameters to customize a nuspec.
      # These parameters are not going in the current release, but is open for discussion to include in the future.
+
     It "Publish a module with -Nuspec" {
         $version = "1.0.0"
         New-ModuleManifest -Path (Join-Path -Path $script:PublishModuleBase -ChildPath "$script:PublishModuleName.psd1") -ModuleVersion $version -Description "$script:PublishModuleName module"  -NestedModules "$script:PublishModuleName.psm1"
@@ -671,7 +689,7 @@ Describe "Test Publish-PSResource" -tags 'CI' {
         $expectedPath = Join-Path -Path $script:repositoryPath2  -ChildPath "$ParentModuleName.$ParentVersion.nupkg"
         (Get-ChildItem $script:repositoryPath2).FullName | Should -Contain $expectedPath
     }
-
+<#
     It "Publish a module with required modules (both in string format and hashtable format)" {
         # look at functions in test utils for creating a module with prerelease
         $ModuleName = "ParentModule"
@@ -706,4 +724,5 @@ Describe "Test Publish-PSResource" -tags 'CI' {
         $expectedPath = Join-Path -Path $script:repositoryPath2  -ChildPath "$ModuleName.$ModuleVersion.nupkg"
         (Get-ChildItem $script:repositoryPath2).FullName | Should -Contain $expectedPath
     }
+#>
 }

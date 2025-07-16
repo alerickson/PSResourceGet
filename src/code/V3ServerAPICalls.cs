@@ -75,7 +75,6 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
                 _sessionClient = new HttpClient(handler);
             };
 
-            _sessionClient = new HttpClient(handler);
             _sessionClient.Timeout = TimeSpan.FromMinutes(10);
             _sessionClient.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", userAgentString);
 
@@ -1623,9 +1622,11 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
                     "HttpRequestCallForContentFailure",
                     ErrorCategory.InvalidResult,
                     this);
+
+                return null;
             }
 
-            if (string.IsNullOrEmpty(content.ToString()))
+            if (string.IsNullOrEmpty(content?.ToString()))
             {
                 _cmdletPassedIn.WriteDebug("Response is empty");
             }

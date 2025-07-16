@@ -1,4 +1,3 @@
-using System.Net;
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
@@ -15,11 +14,16 @@ using System.Management.Automation.Runspaces;
 using System.Runtime.InteropServices;
 using Microsoft.PowerShell.Commands;
 using Microsoft.PowerShell.PSResourceGet.Cmdlets;
+using System.Net;
 using System.Net.Http;
 using System.Globalization;
 using System.Security;
 using Azure.Core;
 using Azure.Identity;
+using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Xml;
 
 namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
 {
@@ -42,7 +46,7 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
         #region String fields
 
         public static readonly string[] EmptyStrArray = Array.Empty<string>();
-        public static readonly char[] WhitespaceSeparator = new char[]{' '};
+        public static readonly char[] WhitespaceSeparator = new char[] { ' ' };
         public const string PSDataFileExt = ".psd1";
         public const string PSScriptFileExt = ".ps1";
         private const string ConvertJsonToHashtableScript = @"
@@ -140,7 +144,7 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
             if (list == null) { return null; }
 
             var strArray = new string[list.Count];
-            for (int i=0; i < list.Count; i++)
+            for (int i = 0; i < list.Count; i++)
             {
                 strArray[i] = list[i] as string;
             }
@@ -161,7 +165,7 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
             {
                 isContainWildcard = true;
                 errorMsgs = errorMsgsList.ToArray();
-                return new string[] {"*"};
+                return new string[] { "*" };
             }
 
             isContainWildcard = false;
@@ -179,8 +183,8 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
                     if (String.Equals(name, "*", StringComparison.InvariantCultureIgnoreCase))
                     {
                         isContainWildcard = true;
-                        errorMsgs = new string[] {};
-                        return new string[] {"*"};
+                        errorMsgs = new string[] { };
+                        return new string[] { "*" };
                     }
 
                     if (name.Contains("?") || name.Contains("["))
@@ -275,7 +279,8 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
                     // eg: 2.8.8.* should translate to the version range "[2.1.3.0,2.1.3.99999]"
                     modifiedVersion = $"[{versionSplit[0]}.{versionSplit[1]}.{versionSplit[2]}.0,{versionSplit[0]}.{versionSplit[1]}.{versionSplit[2]}.999999]";
                 }
-                else {
+                else
+                {
                     error = "Argument for -Version parameter is not in the proper format";
                     return false;
                 }
@@ -311,9 +316,11 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
             string versionString,
             string prerelease)
         {
-            // versionString may be like 1.2.0.0 or 1.2.0
+            // versionString may be like 1.2.0.0 or 1.2.0 or 1.2
             // prerelease    may be      null    or "alpha1"
             // possible passed in examples:
+            // versionString: "1.2"                           <- container registry 2 digit version
+            // versionString: "1.2"     prerelease: "alpha1"  <- container registry 2 digit version
             // versionString: "1.2.0"   prerelease: "alpha1"
             // versionString: "1.2.0"   prerelease: ""        <- doubtful though
             // versionString: "1.2.0.0" prerelease: "alpha1"
@@ -326,9 +333,10 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
 
             int numVersionDigits = versionString.Split('.').Count();
 
-            if (numVersionDigits == 3)
+            if (numVersionDigits == 2 || numVersionDigits == 3)
             {
-                // versionString: "1.2.0" prerelease: "alpha1"
+                // versionString: "1.2.0" prerelease: "alpha1" -> 1.2.0-alpha1
+                // versionString: "1.2"   prerelease: "alpha1" -> 1.2-alpha1
                 return versionString + "-" + prerelease;
             }
             else if (numVersionDigits == 4)
@@ -469,15 +477,15 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
 
             try
             {
-                if (!string.IsNullOrEmpty((string) credentialInfoCandidate.Properties[PSCredentialInfo.VaultNameAttribute]?.Value)
-                    && !string.IsNullOrEmpty((string) credentialInfoCandidate.Properties[PSCredentialInfo.SecretNameAttribute]?.Value))
+                if (!string.IsNullOrEmpty((string)credentialInfoCandidate.Properties[PSCredentialInfo.VaultNameAttribute]?.Value)
+                    && !string.IsNullOrEmpty((string)credentialInfoCandidate.Properties[PSCredentialInfo.SecretNameAttribute]?.Value))
                 {
                     PSCredential credential = null;
                     if (credentialInfoCandidate.Properties[PSCredentialInfo.CredentialAttribute] != null)
                     {
                         try
                         {
-                            credential = (PSCredential) credentialInfoCandidate.Properties[PSCredentialInfo.CredentialAttribute].Value;
+                            credential = (PSCredential)credentialInfoCandidate.Properties[PSCredentialInfo.CredentialAttribute].Value;
                         }
                         catch (Exception e)
                         {
@@ -492,8 +500,8 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
                     }
 
                     repoCredentialInfo = new PSCredentialInfo(
-                        (string) credentialInfoCandidate.Properties[PSCredentialInfo.VaultNameAttribute].Value,
-                        (string) credentialInfoCandidate.Properties[PSCredentialInfo.SecretNameAttribute].Value,
+                        (string)credentialInfoCandidate.Properties[PSCredentialInfo.VaultNameAttribute].Value,
+                        (string)credentialInfoCandidate.Properties[PSCredentialInfo.SecretNameAttribute].Value,
                         credential
                     );
 
@@ -640,12 +648,11 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
             }
         }
 
-        public static string GetAzAccessToken()
+        public static string GetAzAccessToken(PSCmdlet cmdletPassedIn)
         {
             var credOptions = new DefaultAzureCredentialOptions
             {
                 ExcludeEnvironmentCredential = true,
-                ExcludeVisualStudioCodeCredential = true,
                 ExcludeVisualStudioCredential = true,
                 ExcludeWorkloadIdentityCredential = true,
                 ExcludeManagedIdentityCredential = true, // ManagedIdentityCredential makes the experience slow
@@ -657,8 +664,25 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
 
             var dCred = new DefaultAzureCredential(credOptions);
             var tokenRequestContext = new TokenRequestContext(new string[] { "https://management.azure.com/.default" });
-            var token = dCred.GetTokenAsync(tokenRequestContext).Result;
-            return token.Token;
+
+            try
+            {
+                using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
+                {
+                    var token = dCred.GetTokenAsync(tokenRequestContext, cts.Token).GetAwaiter().GetResult();
+                    return token.Token;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                cmdletPassedIn.WriteWarning("Timeout occurred while acquiring Azure access token.");
+                return null;
+            }
+            catch (Exception ex)
+            {
+                cmdletPassedIn.WriteWarning($"Failed to acquire Azure access token: {ex.Message}");
+                return null;
+            }
         }
 
         public static string GetContainerRegistryAccessTokenFromSecretManagement(
@@ -711,7 +735,7 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
                 string password = new NetworkCredential(string.Empty, secretSecureString).Password;
                 return password;
             }
-            else if(secretValue is PSCredential psCredSecret)
+            else if (secretValue is PSCredential psCredSecret)
             {
                 string password = new NetworkCredential(string.Empty, psCredSecret.Password).Password;
                 return password;
@@ -923,7 +947,7 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
             }
         }
 
-        public static NetworkCredential SetNetworkCredential(
+        public static NetworkCredential SetSecretManagementNetworkCredential(
             PSRepositoryInfo repository,
             NetworkCredential networkCredential,
             PSCmdlet cmdletPassedIn)
@@ -939,6 +963,34 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
                 networkCredential = new NetworkCredential(repoCredential.UserName, repoCredential.Password);
 
                 cmdletPassedIn.WriteVerbose("credential successfully read from vault and set for repository: " + repository.Name);
+            }
+
+            return networkCredential;
+        }
+
+        #endregion
+
+        #region Credential methods
+        
+        public static NetworkCredential SetCredentialProviderNetworkCredential(
+            PSRepositoryInfo repository,
+            NetworkCredential networkCredential,
+            PSCmdlet cmdletPassedIn)
+        {
+            // Explicitly passed in Credential takes precedence over repository credential provider.
+            if (networkCredential == null)
+            {
+                cmdletPassedIn.WriteVerbose("Attempting to retrieve credentials from Azure Artifacts Credential Provider.");
+                PSCredential repoCredential = CredentialProvider.GetCredentialsFromProvider(repository.Uri, cmdletPassedIn);
+                if (repoCredential == null)
+                {
+                    cmdletPassedIn.WriteVerbose("Unable to retrieve credentials from Azure Artifacts Credential Provider.  Network credentials are null.");
+                }
+                else
+                {
+                    networkCredential = new NetworkCredential(repoCredential.UserName, repoCredential.Password);
+                    cmdletPassedIn.WriteVerbose("Credential successfully read from Azure Artifacts Credential Provider for repository: " + repository.Name);
+                }
             }
 
             return networkCredential;
@@ -1120,7 +1172,8 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
                 // paths are the same for both Linux and macOS
                 localUserDir = Path.Combine(GetHomeOrCreateTempHome(), ".local", "share", "powershell");
                 // Create the default data directory if it doesn't exist.
-                if (!Directory.Exists(localUserDir)) {
+                if (!Directory.Exists(localUserDir))
+                {
                     Directory.CreateDirectory(localUserDir);
                 }
 
@@ -1165,6 +1218,66 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
             }
 
             return pkgsInstalledOnMachine;
+        }
+
+        internal static void GetMetadataFilesFromPath(string dirPath, string packageName, out string psd1FilePath, out string ps1FilePath, out string nuspecFilePath, out string properCasingPkgName)
+        {
+            psd1FilePath = String.Empty;
+            ps1FilePath = String.Empty;
+            nuspecFilePath = String.Empty;
+            properCasingPkgName = packageName;
+
+            var discoveredFiles = Directory.GetFiles(dirPath, "*.*", SearchOption.AllDirectories);
+            string pkgNamePattern = $"{packageName}*";
+            Regex rgx = new(pkgNamePattern, RegexOptions.IgnoreCase);
+            foreach (var file in discoveredFiles)
+            {
+                if (rgx.IsMatch(file))
+                {
+                    string fileName = Path.GetFileName(file);
+                    if (fileName.EndsWith("psd1"))
+                    {
+                        if (string.Compare($"{packageName}.psd1", fileName, StringComparison.OrdinalIgnoreCase) == 0)
+                        {
+                            properCasingPkgName = Path.GetFileNameWithoutExtension(file);
+                        }
+                        psd1FilePath = file;
+                    }
+                    else if (file.EndsWith("nuspec"))
+                    {
+                        if (string.Compare($"{packageName}.nuspec", fileName, StringComparison.OrdinalIgnoreCase) == 0)
+                        {
+                            properCasingPkgName = Path.GetFileNameWithoutExtension(file);
+                        }
+                        nuspecFilePath = file;
+                    }
+                    else if (file.EndsWith("ps1"))
+                    {
+                        if (string.Compare($"{packageName}.ps1", fileName, StringComparison.OrdinalIgnoreCase) == 0)
+                        {
+                            properCasingPkgName = Path.GetFileNameWithoutExtension(file);
+                        }
+                        ps1FilePath = file;
+                    }
+                }
+            }
+        }
+
+        internal static bool TryGetCaseInsensitiveFilePath(string directory, string fileName, out string fileFound)
+        {
+            fileFound = String.Empty;
+            var files = Directory.GetFiles(directory);
+            foreach (var file in files)
+            {
+                if (string.Equals(Path.GetFileName(file), fileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    fileFound = file;
+                    return true;
+                }
+            }
+
+            // File not found
+            return false;
         }
 
         #endregion
@@ -1417,10 +1530,10 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
             validatedModuleSpecs = Array.Empty<ModuleSpecification>();
             List<ModuleSpecification> moduleSpecsList = new List<ModuleSpecification>();
 
-            foreach(Hashtable moduleSpec in moduleSpecHashtables)
+            foreach (Hashtable moduleSpec in moduleSpecHashtables)
             {
                 // ModuleSpecification(string) constructor for creating a ModuleSpecification when only ModuleName is provided.
-                if (!moduleSpec.ContainsKey("ModuleName") || String.IsNullOrEmpty((string) moduleSpec["ModuleName"]))
+                if (!moduleSpec.ContainsKey("ModuleName") || String.IsNullOrEmpty((string)moduleSpec["ModuleName"]))
                 {
                     errorList.Add(new ErrorRecord(
                         new ArgumentException($"RequiredModules Hashtable entry {moduleSpec.ToString()} is missing a key 'ModuleName' and associated value, which is required for each module specification entry"),
@@ -1432,7 +1545,7 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
                 }
 
                 // At this point it must contain ModuleName key.
-                string moduleSpecName = (string) moduleSpec["ModuleName"];
+                string moduleSpecName = (string)moduleSpec["ModuleName"];
                 ModuleSpecification currentModuleSpec = null;
                 if (!moduleSpec.ContainsKey("MaximumVersion") && !moduleSpec.ContainsKey("ModuleVersion") && !moduleSpec.ContainsKey("RequiredVersion"))
                 {
@@ -1458,10 +1571,10 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
                 else
                 {
                     // ModuleSpecification(Hashtable) constructor for when ModuleName + {Required,Maximum,Module}Version value is also provided.
-                    string moduleSpecMaxVersion = moduleSpec.ContainsKey("MaximumVersion") ? (string) moduleSpec["MaximumVersion"] : String.Empty;
-                    string moduleSpecModuleVersion = moduleSpec.ContainsKey("ModuleVersion") ? (string) moduleSpec["ModuleVersion"] : String.Empty;
-                    string moduleSpecRequiredVersion = moduleSpec.ContainsKey("RequiredVersion") ? (string) moduleSpec["RequiredVersion"] : String.Empty;
-                    Guid moduleSpecGuid = moduleSpec.ContainsKey("Guid") ? (Guid) moduleSpec["Guid"] : Guid.Empty;
+                    string moduleSpecMaxVersion = moduleSpec.ContainsKey("MaximumVersion") ? (string)moduleSpec["MaximumVersion"] : String.Empty;
+                    string moduleSpecModuleVersion = moduleSpec.ContainsKey("ModuleVersion") ? (string)moduleSpec["ModuleVersion"] : String.Empty;
+                    string moduleSpecRequiredVersion = moduleSpec.ContainsKey("RequiredVersion") ? (string)moduleSpec["RequiredVersion"] : String.Empty;
+                    Guid moduleSpecGuid = moduleSpec.ContainsKey("Guid") ? (Guid)moduleSpec["Guid"] : Guid.Empty;
 
                     if (String.IsNullOrEmpty(moduleSpecMaxVersion) && String.IsNullOrEmpty(moduleSpecModuleVersion) && String.IsNullOrEmpty(moduleSpecRequiredVersion))
                     {
@@ -1521,6 +1634,23 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
             errors = errorList.ToArray();
             validatedModuleSpecs = moduleSpecsList.ToArray();
             return moduleSpecCreatedSuccessfully;
+        }
+
+        public static SecureString ConvertToSecureString(string input)
+        {
+            if (input == null) {
+                throw new ArgumentNullException(nameof(input));
+            }
+            
+            SecureString secureString = new SecureString();
+            foreach (char c in input)
+            {
+                secureString.AppendChar(c);
+            }
+
+            secureString.MakeReadOnly();
+            
+            return secureString;
         }
 
         #endregion
@@ -1584,22 +1714,41 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
         /// </Summary>
         public static void DeleteDirectory(string dirPath)
         {
-            foreach (var dirFilePath in Directory.GetFiles(dirPath))
+            if (!Directory.Exists(dirPath))
+            {
+                throw new Exception($"Path '{dirPath}' that was attempting to be deleted does not exist.");
+            }
+
+            // Remove read only file attributes first
+            foreach (var dirFilePath in Directory.GetFiles(dirPath,"*",SearchOption.AllDirectories))
             {
                 if (File.GetAttributes(dirFilePath).HasFlag(FileAttributes.ReadOnly))
                 {
-                    File.SetAttributes(dirFilePath, (File.GetAttributes(dirFilePath) & ~FileAttributes.ReadOnly));
+                    File.SetAttributes(dirFilePath, File.GetAttributes(dirFilePath) & ~FileAttributes.ReadOnly);
                 }
-
-                File.Delete(dirFilePath);
             }
-
-            foreach (var dirSubPath in Directory.GetDirectories(dirPath))
+            // Delete directory recursive, try multiple times before throwing ( #1662 )
+            int maxAttempts = 5;
+            int msDelay = 5;
+            for (int attempt = 1; attempt <= maxAttempts; ++attempt)
             {
-                DeleteDirectory(dirSubPath);
+                try
+                {
+                    Directory.Delete(dirPath,true);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    if (attempt < maxAttempts && (ex is IOException || ex is UnauthorizedAccessException))
+                    {
+                        Thread.Sleep(msDelay);
+                    }
+                    else
+                    {
+                        throw;
+                    }
+                }
             }
-
-            Directory.Delete(dirPath);
         }
 
         /// <Summary>
@@ -1817,6 +1966,73 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
 
         #endregion
 
+        #region Nuspec file parsing methods
+
+        public static Hashtable GetMetadataFromNuspec(string nuspecFilePath, PSCmdlet cmdletPassedIn, out ErrorRecord errorRecord)
+        {
+            Hashtable nuspecHashtable = new Hashtable(StringComparer.InvariantCultureIgnoreCase);
+
+            XmlDocument nuspecXmlDocument = LoadXmlDocument(nuspecFilePath, cmdletPassedIn, out errorRecord);
+            if (errorRecord != null)
+            {
+                return nuspecHashtable;
+            }
+
+            try
+            {
+                XmlNodeList elemList = nuspecXmlDocument.GetElementsByTagName("metadata");
+                for(int i = 0; i < elemList.Count; i++)
+                {
+                    XmlNode metadataInnerXml = elemList[i];
+
+                    for(int j= 0; j<metadataInnerXml.ChildNodes.Count; j++)
+                    {
+                        string key = metadataInnerXml.ChildNodes[j].LocalName;
+                        string value = metadataInnerXml.ChildNodes[j].InnerText;
+
+                        if (!nuspecHashtable.ContainsKey(key))
+                        {
+                            nuspecHashtable.Add(key, value);
+                        }
+                    }
+
+                }
+            }
+            catch (Exception e)
+            {
+                errorRecord = new ErrorRecord(
+                    exception: e,
+                    "GetHashtableForNuspecFailure",
+                    ErrorCategory.ReadError,
+                    cmdletPassedIn);
+            }
+
+            return nuspecHashtable;
+        }
+
+        /// <summary>
+        /// Method that loads file content into XMLDocument. Used when reading .nuspec file.
+        /// </summary>
+        public static XmlDocument LoadXmlDocument(string filePath, PSCmdlet cmdletPassedIn, out ErrorRecord errRecord)
+        {
+            errRecord = null;
+            XmlDocument doc = new XmlDocument();
+            doc.PreserveWhitespace = true;
+            try { doc.Load(filePath); }
+            catch (Exception e)
+            {
+                errRecord = new ErrorRecord(
+                    exception: e,
+                    "LoadXmlDocumentFailure",
+                    ErrorCategory.ReadError,
+                    cmdletPassedIn);
+            }
+
+            return doc;
+        }
+
+        #endregion
+
     }
 
     #endregion
@@ -2029,7 +2245,7 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
                 if (!signature.Status.Equals(SignatureStatus.Valid))
                 {
                     errorRecord = new ErrorRecord(
-                        new ArgumentException($"The signature for '{pkgName}' is '{signature.Status}."),
+                        new ArgumentException($"The signature status for '{pkgName}' file '{Path.GetFileName(signature.Path)}' is '{signature.Status}'. Status message: '{signature.StatusMessage}'"),
                         "GetAuthenticodeSignatureError",
                         ErrorCategory.InvalidResult,
                         cmdletPassedIn);

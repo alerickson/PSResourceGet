@@ -14,11 +14,15 @@ Describe 'Test Find-PSResource for local repositories' -tags 'CI' {
         $localUNCRepo = 'psgettestlocal3'
         $testModuleName = "test_local_mod"
         $testModuleName2 = "test_local_mod2"
+        $testModuleName3 = "Test_Local_Mod3"
+        $similarTestModuleName = "test_local_mod.similar"
         $commandName = "cmd1"
         $dscResourceName = "dsc1"
         $prereleaseLabel = ""
+        $localNupkgRepo = "localNupkgRepo"
         Get-NewPSResourceRepositoryFile
         Register-LocalRepos
+        Register-LocalTestNupkgsRepo
 
         $localRepoUriAddress = Join-Path -Path $TestDrive -ChildPath "testdir"
         $tagsEscaped = @("'Test'", "'Tag2'", "'PSCommand_$cmdName'", "'PSDscResource_$dscName'")
@@ -31,6 +35,11 @@ Describe 'Test Find-PSResource for local repositories' -tags 'CI' {
 
         New-TestModule -moduleName $testModuleName2 -repoName $localRepo -packageVersion "5.0.0" -prereleaseLabel "" -tags $tagsEscaped
         New-TestModule -moduleName $testModuleName2 -repoName $localRepo -packageVersion "5.2.5" -prereleaseLabel $prereleaseLabel -tags $tagsEscaped
+
+        New-TestModule -moduleName $testModuleName3 -repoName $localRepo -packageVersion "1.0.0" -prereleaseLabel "" -tags @()
+
+        New-TestModule -moduleName $similarTestModuleName -repoName $localRepo -packageVersion "4.0.0" -prereleaseLabel "" -tags $tagsEscaped
+        New-TestModule -moduleName $similarTestModuleName -repoName $localRepo -packageVersion "5.0.0" -prereleaseLabel "" -tags $tagsEscaped
     }
 
     AfterAll {
@@ -44,6 +53,20 @@ Describe 'Test Find-PSResource for local repositories' -tags 'CI' {
         $res.Version | Should -Be "5.0.0"
     }
 
+    It "find resource given specific Name with incorrect casing (should return correct casing)" {
+        # FindName()
+        $res = Find-PSResource -Name "test_local_mod3" -Repository $localRepo
+        $res.Name | Should -Be $testModuleName3
+        $res.Version | Should -Be "1.0.0"
+    }
+
+    It "find resource given specific Name with incorrect casing and Version (should return correct casing)" {
+        # FindVersion()
+        $res = Find-PSResource -Name "test_local_mod3" -Version "1.0.0" -Repository $localRepo
+        $res.Name | Should -Be $testModuleName3
+        $res.Version | Should -Be "1.0.0"
+    }
+
     It "find resource given specific Name, Version null (module) from a UNC-based local repository" {
         # FindName()
         $res = Find-PSResource -Name $testModuleName -Repository $localUNCRepo
@@ -51,16 +74,15 @@ Describe 'Test Find-PSResource for local repositories' -tags 'CI' {
         $res.Version | Should -Be "5.0.0"
     }
 
-    It "find resource given Name, Version null (package containing nuspec only)" {
-        # FindName()
-        $pkgName = "test_nonpsresource"
-        $requiredTag = "Tag1"
-        Save-PSResource -Name $pkgName -Repository "NuGetGallery" -Path $localRepoUriAddress -AsNupkg -TrustRepository
-        $res = Find-PSResource -Name $pkgName -Repository $localRepo
-        $res.Name | Should -Be $pkgName
-        $res.Repository | Should -Be $localRepo
-        $res.Tags | Should -Contain $requiredTag
-    }
+    #  TODO:  bug with Save-PSResource
+    # It "find resource given Name, Version null (package containing nuspec only)" {
+    #     # FindName()
+    #     $pkgName = "PowerShell"
+    #     Save-PSResource -Name $pkgName -Repository "NuGetGallery" -Path $localRepoUriAddress -AsNupkg -TrustRepository
+    #     $res = Find-PSResource -Name $pkgName -Repository $localRepo
+    #     $res.Name | Should -Be $pkgName
+    #     $res.Repository | Should -Be $localRepo
+    # }
 
     It "find script without RequiredModules" {
         # FindName()
@@ -74,11 +96,23 @@ Describe 'Test Find-PSResource for local repositories' -tags 'CI' {
     }
 
     It "should not find resource given nonexistant Name" {
+        # FindName()
         $res = Find-PSResource -Name NonExistantModule -Repository $localRepo -ErrorVariable err -ErrorAction SilentlyContinue
         $res | Should -BeNullOrEmpty
         $err.Count | Should -Not -Be 0
         $err[0].FullyQualifiedErrorId | Should -BeExactly "PackageNotFound,Microsoft.PowerShell.PSResourceGet.Cmdlets.FindPSResource"
         $res | Should -BeNullOrEmpty
+    }
+
+    It "find resource given specific Name when another package with similar name (with period) exists" {
+        # FindName()
+        $res = Find-PSResource -Name $testModuleName -Repository $localRepo
+        $res.Name | Should -Be $testModuleName
+        $res.Version | Should -Be "5.0.0"
+
+        $res = Find-PSResource -Name $similarTestModuleName -Repository $localRepo
+        $res.Name | Should -Be $similarTestModuleName
+        $res.Version | Should -Be "5.0.0"
     }
 
     It "find resource(s) given wildcard Name" {
@@ -127,6 +161,22 @@ Describe 'Test Find-PSResource for local repositories' -tags 'CI' {
         $resPrerelease = Find-PSResource -Name $testModuleName -Prerelease -Repository $localRepo
         $resPrerelease.Version | Should -Be "5.2.5"
         $resPrerelease.Prerelease | Should -Be "alpha001"
+    }
+
+    It "find resource given specific Name when another package with similar name (with period) exists" {
+        # FindVersion()
+        # Package $testModuleName version 4.0.0 does not exist
+        # previously if Find-PSResource -Version against local repo did not find that package's version it kept looking at
+        # similar named packages and would fault. This test is to ensure only the specified package and its version is checked
+        $res = Find-PSResource -Name $testModuleName -Version "4.0.0" -Repository $localRepo -ErrorVariable err -ErrorAction SilentlyContinue
+        $res | Should -BeNullOrEmpty
+        $err.Count | Should -Not -Be 0
+        $err[0].FullyQualifiedErrorId | Should -BeExactly "PackageNotFound,Microsoft.PowerShell.PSResourceGet.Cmdlets.FindPSResource"
+        $res | Should -BeNullOrEmpty
+
+        $res = Find-PSResource -Name $similarTestModuleName -Version "4.0.0" -Repository $localRepo
+        $res.Name | Should -Be $similarTestModuleName
+        $res.Version | Should -Be "4.0.0"
     }
 
     It "find resources, including Prerelease version resources, when given Prerelease parameter" {
@@ -276,5 +326,15 @@ Describe 'Test Find-PSResource for local repositories' -tags 'CI' {
         $res | Should -BeNullOrEmpty
         $err.Count | Should -Not -Be 0
         $err[0].FullyQualifiedErrorId | Should -BeExactly "FindTagsPackageNotFound,Microsoft.PowerShell.PSResourceGet.Cmdlets.FindPSResource"
+    }
+
+    It "find package where prerelease label includes digits and period (i.e prerelease label is not just words)" {
+        $nupkgName = "WebView2.Avalonia"
+        $nupkgVersion = "1.0.1518.46"
+        $prereleaseLabel = "preview.230207.17"
+        $res = Find-PSResource -Name $nupkgName -Prerelease -Repository $localNupkgRepo
+        $res.Name | Should -Be $nupkgName
+        $res.Version | Should -Be $nupkgVersion
+        $res.Prerelease | Should -Be $prereleaseLabel
     }
 }
