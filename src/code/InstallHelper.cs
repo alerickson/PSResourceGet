@@ -15,6 +15,7 @@ using System.Net;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
 {
@@ -533,10 +534,11 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
                                                         currentServer: currentServer,
                                                         currentResponseUtil: currentResponseUtil,
                                                         tempInstallPath: tempInstallPath,
+                                                        skipDependencyCheck: skipDependencyCheck,
                                                         packagesHash: new Hashtable(StringComparer.InvariantCultureIgnoreCase),
                                                         errRecord: out ErrorRecord errRecord);
 
-                    // At this point parent package is installed to temp path.
+                    // At this point all packages are installed to temp path.
                     if (errRecord != null)
                     {
                         if (errRecord.FullyQualifiedErrorId.Equals("PackageNotFound"))
@@ -596,6 +598,7 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
                                             currentServer: currentServer,
                                             currentResponseUtil: currentResponseUtil,
                                             tempInstallPath: tempInstallPath,
+                                            skipDependencyCheck: skipDependencyCheck,
                                             packagesHash: packagesHash,
                                             errRecord: out ErrorRecord installPkgErrRecord);
 
@@ -672,6 +675,7 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
             ServerApiCall currentServer,
             ResponseUtil currentResponseUtil,
             string tempInstallPath,
+            bool skipDependencyCheck,
             Hashtable packagesHash,
             out ErrorRecord errRecord)
         {
@@ -679,6 +683,7 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
             FindResults responses = null;
             errRecord = null;
 
+            // Find the parent package that needs to be installed
             switch (searchVersionType)
             {
                 case VersionType.VersionRange:
@@ -716,6 +721,7 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
                     break;
             }
 
+            // Convert parent package to PSResourceInfo
             PSResourceInfo pkgToInstall = null;
             foreach (PSResourceResult currentResult in currentResponseUtil.ConvertToPSResourceResult(responses))
             {
@@ -836,25 +842,150 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
             }
             else
             {
-                // Download the package.
+                // Concurrently Updates
+                // Find all dependencies
                 string pkgName = pkgToInstall.Name;
-                Stream responseStream = currentServer.InstallPackage(pkgName, pkgVersion, _prerelease, out ErrorRecord installNameErrRecord);
-                if (installNameErrRecord != null)
+                if (!skipDependencyCheck)
                 {
-                    errRecord = installNameErrRecord;
-                    return packagesHash;
+                    List<PSResourceInfo> allDependencies = FindAllDependencies(currentServer, currentResponseUtil, pkgToInstall, repository);
+
+                    return InstallParentAndDependencyPackages(pkgToInstall, allDependencies, currentServer, tempInstallPath, packagesHash, updatedPackagesHash, pkgToInstall);
                 }
+                else {
 
-                bool installedToTempPathSuccessfully = _asNupkg ? TrySaveNupkgToTempPath(responseStream, tempInstallPath, pkgName, pkgVersion, pkgToInstall, packagesHash, out updatedPackagesHash, out errRecord) :
-                    TryInstallToTempPath(responseStream, tempInstallPath, pkgName, pkgVersion, pkgToInstall, packagesHash, out updatedPackagesHash, out errRecord);
+                    // TODO:  check this version and prerelease combo
+                    Stream responseStream = currentServer.InstallPackage(pkgToInstall.Name, pkgToInstall.Version.ToString(), true, out ErrorRecord installNameErrRecord);
 
-                if (!installedToTempPathSuccessfully)
-                {
-                    return packagesHash;
+                    if (installNameErrRecord != null)
+                    {
+                        errRecord = installNameErrRecord;
+                        return packagesHash;
+                    }
+
+                    bool installedToTempPathSuccessfully = _asNupkg ? TrySaveNupkgToTempPath(responseStream, tempInstallPath, pkgToInstall.Name, pkgToInstall.Version.ToString(), pkgToInstall, packagesHash, out updatedPackagesHash, out errRecord) :
+                        TryInstallToTempPath(responseStream, tempInstallPath, pkgToInstall.Name, pkgToInstall.Version.ToString(), pkgToInstall, packagesHash, out updatedPackagesHash, out errRecord);
+                    if (!installedToTempPathSuccessfully)
+                    {
+                        return packagesHash;
+                    }
                 }
             }
 
             return updatedPackagesHash;
+        }
+
+          // Concurrency Updates
+        private List<PSResourceInfo> FindAllDependencies(ServerApiCall currentServer, ResponseUtil currentResponseUtil, PSResourceInfo pkgToInstall, PSRepositoryInfo repository)
+        {
+            if (currentServer.Repository.ApiVersion == PSRepositoryInfo.APIVersion.V3)
+            {
+                _cmdletPassedIn.WriteWarning("Installing dependencies is not currently supported for V3 server protocol repositories. The package will be installed without installing dependencies.");
+            }
+
+            var findHelper = new FindHelper(_cancellationToken, _cmdletPassedIn, _networkCredential);
+            _cmdletPassedIn.WriteDebug($"Finding dependency packages for '{pkgToInstall.Name}'");
+
+            // the last package added will be the parent package.  
+            List<PSResourceInfo> allDependencies = findHelper.FindDependencyPackages(currentServer, currentResponseUtil, pkgToInstall, repository).ToList();
+
+            // allDependencies contains parent package as well
+            foreach (PSResourceInfo pkg in allDependencies)
+            {
+                // Console.WriteLine($"{pkg.Name}: {pkg.Version}");
+            }
+
+            return allDependencies;
+        }
+
+         // Concurrently Updates  
+        private Hashtable InstallParentAndDependencyPackages(PSResourceInfo parentPkg, List<PSResourceInfo> allDependencies, ServerApiCall currentServer, string tempInstallPath, Hashtable packagesHash, Hashtable updatedPackagesHash, PSResourceInfo pkgToInstall)
+        {
+            List<ErrorRecord> errors = new List<ErrorRecord>();
+            // If installing more than 5 packages, do so concurrently
+            if (allDependencies.Count > 5)
+            {
+                // Set the maximum degree of parallelism to 32 (Invoke-Command has default of 32, that's where we got this number from)
+                Parallel.ForEach(allDependencies, new ParallelOptions { MaxDegreeOfParallelism = 32 }, depPkg =>
+                {
+                    var depPkgName = depPkg.Name;
+                    var depPkgVersion = depPkg.Version.ToString();
+                    // Console.WriteLine($"Processing number: {depPkg}, Thread ID: {Task.CurrentId}");
+
+                    Stream responseStream = currentServer.InstallPackage(depPkgName, depPkgVersion, true, out ErrorRecord installNameErrRecord);
+                    if (installNameErrRecord != null)
+                    {
+                        errors.Add(installNameErrRecord);
+                    }
+
+                    ErrorRecord tempSaveErrRecord = null, tempInstallErrRecord = null;
+                    bool installedToTempPathSuccessfully = _asNupkg ? TrySaveNupkgToTempPath(responseStream, tempInstallPath, depPkgName, depPkgVersion, depPkg, packagesHash, out updatedPackagesHash, out tempSaveErrRecord) :
+                        TryInstallToTempPath(responseStream, tempInstallPath, depPkgName, depPkgVersion, depPkg, packagesHash, out updatedPackagesHash, out tempInstallErrRecord);
+
+                    if (!installedToTempPathSuccessfully)
+                    {
+                        errors.Add(tempSaveErrRecord ?? tempInstallErrRecord);
+                    }
+                });
+
+                if (errors.Count > 0)
+                {
+                    // Write out all errors collected from Parallel.ForEach
+                    foreach (var err in errors)
+                    {
+                        _cmdletPassedIn.WriteError(err);
+                    }
+
+                    return packagesHash;
+                }
+
+                // Install parent package
+                Stream responseStream = currentServer.InstallPackage(parentPkg.Name, parentPkg.Version.ToString(), true, out ErrorRecord installNameErrRecord);
+                if (installNameErrRecord != null)
+                {
+                    _cmdletPassedIn.WriteError(installNameErrRecord);
+                    return packagesHash;
+                }
+
+                ErrorRecord tempSaveErrRecord = null, tempInstallErrRecord = null;
+                bool installedToTempPathSuccessfully = _asNupkg ? TrySaveNupkgToTempPath(responseStream, tempInstallPath, parentPkg.Name, parentPkg.Version.ToString(), pkgToInstall, packagesHash, out updatedPackagesHash, out tempSaveErrRecord) :
+                    TryInstallToTempPath(responseStream, tempInstallPath, parentPkg.Name, parentPkg.Version.ToString(), pkgToInstall, packagesHash, out updatedPackagesHash, out tempInstallErrRecord);
+                if (!installedToTempPathSuccessfully)
+                {
+                    _cmdletPassedIn.WriteError(tempSaveErrRecord ?? tempInstallErrRecord);
+                    return packagesHash;
+                }
+
+                return updatedPackagesHash;
+            }
+            else
+            {
+                // Install the good old fashioned way
+                // Make sure to install dependencies first, then install parent pkg
+                allDependencies.Add(parentPkg);
+                foreach (var pkgToBeInstalled in allDependencies)
+                {
+                    var pkgToInstallName = pkgToBeInstalled.Name;
+                    var pkgToInstallVersion = pkgToBeInstalled.Version.ToString();
+                    Stream responseStream = currentServer.InstallPackage(pkgToInstallName, pkgToInstallVersion, true, out ErrorRecord installNameErrRecord);
+                    if (installNameErrRecord != null)
+                    {
+                        _cmdletPassedIn.WriteError(installNameErrRecord);
+                        return packagesHash;
+                    }
+
+                    ErrorRecord tempSaveErrRecord = null, tempInstallErrRecord = null;
+                    bool installedToTempPathSuccessfully = _asNupkg ? TrySaveNupkgToTempPath(responseStream, tempInstallPath, pkgToInstallName, pkgToInstallVersion, pkgToBeInstalled, packagesHash, out updatedPackagesHash, out tempSaveErrRecord) :
+                        TryInstallToTempPath(responseStream, tempInstallPath, pkgToInstallName, pkgToInstallVersion, pkgToBeInstalled, packagesHash, out updatedPackagesHash, out tempInstallErrRecord);
+
+                    if (!installedToTempPathSuccessfully)
+                    {
+                        _cmdletPassedIn.WriteError(tempSaveErrRecord ?? tempInstallErrRecord);
+                        return packagesHash;
+                    }
+                }
+
+                return updatedPackagesHash;
+            }
         }
 
         /// <summary>
