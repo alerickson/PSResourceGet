@@ -386,7 +386,7 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
         }
 
         /// <summary>
-        /// Moves file from the temp install path to desination path for install.
+        /// Moves file from the temp install path to destination path for install.
         /// </summary>
         private void MoveFilesIntoInstallPath(
             PSResourceInfo pkgInfo,
@@ -589,6 +589,16 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
                                     {
                                         NuGetVersion.TryParse(depPkg.Version.ToString(), out depVersion);
                                     }
+                                }
+
+                                string depPkgNameVersion = $"{depPkg.Name}{depPkg.Version.ToString()}";
+                                if (_packagesOnMachine.Contains(depPkgNameVersion) && !depPkg.IsPrerelease)
+                                {
+                                    // if a dependency package is already installed, do not install it again.
+                                    // to determine if the package version is already installed, _packagesOnMachine is used but it only contains name, version info, not version with prerelease info
+                                    // if the dependency package is found to be prerelease, it is safer to install it (and worse case it reinstalls)
+                                    _cmdletPassedIn.WriteVerbose($"Dependency '{depPkg.Name}' with version '{depPkg.Version}' is already installed.");
+                                    continue;
                                 }
 
                                 packagesHash = BeginPackageInstall(
@@ -1338,7 +1348,7 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
             catch (Exception e)
             {
                 error = new ErrorRecord(
-                    new Exception($"Error occured while extracting .nupkg: '{e.Message}'"),
+                    new Exception($"Error occurred while extracting .nupkg: '{e.Message}'"),
                     "ErrorExtractingNupkg",
                     ErrorCategory.OperationStopped,
                     _cmdletPassedIn);
@@ -1447,7 +1457,7 @@ namespace Microsoft.PowerShell.PSResourceGet.Cmdlets
                     }
                 }
 
-                // Licesnse agreement processing
+                // License agreement processing
                 if (requireLicenseAcceptance)
                 {
                     // If module requires license acceptance and -AcceptLicense is not passed in, display prompt

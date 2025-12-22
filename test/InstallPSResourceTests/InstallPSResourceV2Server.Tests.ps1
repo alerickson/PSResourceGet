@@ -31,7 +31,7 @@ Describe 'Test Install-PSResource for V2 Server scenarios' -tags 'CI' {
 
     AfterEach {
         Uninstall-PSResource "test_module", "test_module2", "test_script", "TestModule99", "testModuleWithlicense", `
-            "TestFindModule","ClobberTestModule1", "ClobberTestModule2", "PackageManagement", "TestTestScript", `
+            "TestFindModule", "ClobberTestModule1", "ClobberTestModule2", "PackageManagement", "TestTestScript", `
             "TestModuleWithDependency", "TestModuleWithPrereleaseDep", "PrereleaseModule" -SkipDependencyCheck -ErrorAction SilentlyContinue
     }
 
@@ -40,9 +40,9 @@ Describe 'Test Install-PSResource for V2 Server scenarios' -tags 'CI' {
     }
 
     $testCases = [array](
-        @{Name="*";                          ErrorId="NameContainsWildcard"},
-        @{Name="Test_Module*";               ErrorId="NameContainsWildcard"},
-        @{Name="Test?Module","Test[Module";  ErrorId="ErrorFilteringNamesForUnsupportedWildcards"}
+        @{Name = "*"; ErrorId = "NameContainsWildcard" },
+        @{Name = "Test_Module*"; ErrorId = "NameContainsWildcard" },
+        @{Name = "Test?Module", "Test[Module"; ErrorId = "ErrorFilteringNamesForUnsupportedWildcards" }
     )
 
     It "Should not install resource with wildcard in name" -TestCases $testCases {
@@ -73,9 +73,9 @@ Describe 'Test Install-PSResource for V2 Server scenarios' -tags 'CI' {
         $pkg.Name | Should -Be $pkgNames
     }
 
-    It "Should not install resource given nonexistant name" {
-        Install-PSResource -Name "NonExistantModule" -Repository $PSGalleryName -TrustRepository -ErrorVariable err -ErrorAction SilentlyContinue
-        $pkg = Get-InstalledPSResource "NonExistantModule"
+    It "Should not install resource given nonexistent name" {
+        Install-PSResource -Name "NonExistentModule" -Repository $PSGalleryName -TrustRepository -ErrorVariable err -ErrorAction SilentlyContinue
+        $pkg = Get-InstalledPSResource "NonExistentModule"
         $pkg.Name | Should -BeNullOrEmpty
         $err.Count | Should -BeGreaterThan 0
         $err[0].FullyQualifiedErrorId | Should -BeExactly "InstallPackageFailure,Microsoft.PowerShell.PSResourceGet.Cmdlets.InstallPSResource"
@@ -388,6 +388,7 @@ Describe 'Test Install-PSResource for V2 Server scenarios' -tags 'CI' {
         $res.Name | Should -Contain $testModuleName
     }
 
+    # -RequiredResource
     It "Install modules using -RequiredResource with hashtable" {
         $rrHash = @{
             test_module  = @{
@@ -416,6 +417,29 @@ Describe 'Test Install-PSResource for V2 Server scenarios' -tags 'CI' {
         $res3 = Get-InstalledPSResource $testModuleName2
         $res3.Name | Should -Be $testModuleName2
         $res3.Version | Should -Be "0.0.93"
+    }
+
+    It "Install module using -RequiredResource with hashtable, and prerelease is boolean true" {
+        Install-PSResource -TrustRepository -RequiredResource @{
+            'TestModule99' = @{
+                'repository' = 'PSGallery'
+                'prerelease' = $true
+            }
+        }
+        (Get-InstalledPSResource -Name 'TestModule99').'Prerelease' | Should -Be 'beta2'
+    }
+
+    It "Install module using -RequiredResource with TrustRepository in hashtable" {
+        # This test verifies that TrustRepository specified in -RequiredResource hashtable is respected
+        Install-PSResource -RequiredResource @{
+            'TestModule99' = @{
+                'repository' = 'PSGallery'
+                'trustrepository' = 'true'
+            }
+        }
+        $res = Get-InstalledPSResource -Name 'TestModule99'
+        $res.Name | Should -Be 'TestModule99'
+        $res.Version | Should -Be '0.0.93'
     }
 
     It "Install modules using -RequiredResource with JSON string" {
@@ -543,6 +567,14 @@ Describe 'Test Install-PSResource for V2 Server scenarios' -tags 'CI' {
         $err[0].FullyQualifiedErrorId | Should -BeExactly "GetAuthenticodeSignatureError,Microsoft.PowerShell.PSResourceGet.Cmdlets.InstallPSResource"
     }
 
+    # Test that AuthenticodeCheck parameter displays warning on non-Windows
+    It "Install with AuthenticodeCheck on non-Windows should display warning" -Skip:(Get-IsWindows) {
+        Install-PSResource -Name $testModuleName -Repository $PSGalleryName -TrustRepository -AuthenticodeCheck -WarningVariable warn -WarningAction SilentlyContinue
+        $warn[0] | Should -Match "Authenticode check cannot be performed on Linux or MacOS"
+        $res = Get-InstalledPSResource $testModuleName
+        $res.Name | Should -Be $testModuleName
+    }
+
     # Unix test for installing scripts
     It "Install script resource - Unix only" -Skip:(Get-IsWindows) {
         # previously installing pester on Unix was throwing an error due to how the environment PATH variable was being gotten.
@@ -569,6 +601,17 @@ Describe 'Test Install-PSResource for V2 Server scenarios' -tags 'CI' {
         $moduleName = "TestModuleVersionWithNine"
         $version = "1.9.9"
         Install-PSResource -Name $moduleName -Repository $PSGalleryName -TrustRepository -Version "[$version, $version]" -Prerelease
+        $res = Get-InstalledPSResource $moduleName
+        $res | Should -Not -BeNullOrEmpty
+        $res.Version | Should -Be $version
+    }
+
+    It "Install resource that is unlisted" {
+        # InstallVersion scenario
+        # 'test_unlisted' version 0.0.3 is unlisted
+        $moduleName = 'test_unlisted'
+        $version = '0.0.3'
+        Install-PSResource -Name $moduleName -Version $version -Repository $PSGalleryName -TrustRepository
         $res = Get-InstalledPSResource $moduleName
         $res | Should -Not -BeNullOrEmpty
         $res.Version | Should -Be $version

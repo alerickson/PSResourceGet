@@ -125,7 +125,7 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
             return "'" + CodeGeneration.EscapeSingleQuotedStringContent(name) + "'";
         }
 
-        public static string[] GetStringArrayFromString(string[] delimeter, string stringToConvertToArray)
+        public static string[] GetStringArrayFromString(string[] delimiter, string stringToConvertToArray)
         {
             // This will be a string where entries are separated by space.
             if (String.IsNullOrEmpty(stringToConvertToArray))
@@ -133,7 +133,7 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
                 return Utils.EmptyStrArray;
             }
 
-            return stringToConvertToArray.Split(delimeter, StringSplitOptions.RemoveEmptyEntries);
+            return stringToConvertToArray.Split(delimiter, StringSplitOptions.RemoveEmptyEntries);
         }
 
         /// <summary>
@@ -189,12 +189,17 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
 
                     if (name.Contains("?") || name.Contains("["))
                     {
-                        errorMsgsList.Add(String.Format("-Name with wildcards '?' and '[' are not supported for this cmdlet so Name entry: {0} will be discarded.", name));
+                        errorMsgsList.Add(String.Format("-Name with wildcards '?' and '[' are not supported for this cmdlet so Name entry: '{0}' will be discarded.", name));
                         continue;
                     }
 
                     isContainWildcard = true;
                     namesWithSupportedWildcards.Add(name);
+                }
+                else if(name.StartsWith("/") || name.StartsWith("\\"))
+                {
+                    errorMsgsList.Add(String.Format("-Name starting with path separator '/' or '\\' is not supported for this cmdlet so Name entry: '{0}' will be discarded.", name));
+                    continue;
                 }
                 else
                 {
@@ -662,6 +667,7 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
                 ExcludeInteractiveBrowserCredential = false
             };
 
+            // codeql[cs/security/identity/default-azure-credential-use] DefaultAzureCredential is not being used to create a credential in a production environment (i.e hosted server). It is created locally for a PSResourceGet command invocation, intended to be short-lived, and supports multiple authentication mechanisms which cannot be predicted and isolated for the invocation beforehand.
             var dCred = new DefaultAzureCredential(credOptions);
             var tokenRequestContext = new TokenRequestContext(new string[] { "https://management.azure.com/.default" });
 
@@ -971,7 +977,7 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
         #endregion
 
         #region Credential methods
-        
+
         public static NetworkCredential SetCredentialProviderNetworkCredential(
             PSRepositoryInfo repository,
             NetworkCredential networkCredential,
@@ -1240,24 +1246,24 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
                         if (string.Compare($"{packageName}.psd1", fileName, StringComparison.OrdinalIgnoreCase) == 0)
                         {
                             properCasingPkgName = Path.GetFileNameWithoutExtension(file);
+                            psd1FilePath = file;
                         }
-                        psd1FilePath = file;
                     }
                     else if (file.EndsWith("nuspec"))
                     {
                         if (string.Compare($"{packageName}.nuspec", fileName, StringComparison.OrdinalIgnoreCase) == 0)
                         {
                             properCasingPkgName = Path.GetFileNameWithoutExtension(file);
+                            nuspecFilePath = file;
                         }
-                        nuspecFilePath = file;
                     }
                     else if (file.EndsWith("ps1"))
                     {
                         if (string.Compare($"{packageName}.ps1", fileName, StringComparison.OrdinalIgnoreCase) == 0)
                         {
                             properCasingPkgName = Path.GetFileNameWithoutExtension(file);
+                            ps1FilePath = file;
                         }
-                        ps1FilePath = file;
                     }
                 }
             }
@@ -1289,7 +1295,7 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
         /// <summary>
         /// Read psd1 manifest file contents and return as Hashtable object.
         /// </summary>
-        /// <param name="manifestFilePath">File path to manfiest psd1 file.</param>
+        /// <param name="manifestFilePath">File path to manifest psd1 file.</param>
         /// <param name="manifestInfo">Hashtable of manifest file contents.</param>
         /// <param name="error">Error exception on failure.</param>
         /// <returns>True on success.</returns>
@@ -1423,7 +1429,7 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
         public static bool ValidateModuleManifest(string moduleManifestPath, out string errorMsg)
         {
             errorMsg = string.Empty;
-            using (System.Management.Automation.PowerShell pwsh = System.Management.Automation.PowerShell.Create())
+            using (System.Management.Automation.PowerShell pwsh = System.Management.Automation.PowerShell.Create(RunspaceMode.CurrentRunspace))
             {
                 // use PowerShell cmdlet Test-ModuleManifest
                 // TODO: Test-ModuleManifest will throw an error if RequiredModules specifies a module that does not exist
@@ -1443,37 +1449,37 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
                     }
                     else
                     {
-                        errorMsg = $"Error occured while running 'Test-ModuleManifest': {e.Message}";
+                        errorMsg = $"Error occurred while running 'Test-ModuleManifest': {e.Message}";
                         return false;
                     }
                 }
 
+                // Validate the result object directly
+                if (results.Any())
+                {
+                    PSModuleInfo psModuleInfoObj = results[0].BaseObject as PSModuleInfo;
+                    if (string.IsNullOrWhiteSpace(psModuleInfoObj.Author))
+                    {
+                        errorMsg = "No author was provided in the module manifest. The module manifest must specify a version, author and description. Run 'Test-ModuleManifest' to validate the file.";
+                        return false;
+                    }
+                    else if (string.IsNullOrWhiteSpace(psModuleInfoObj.Description))
+                    {
+                        errorMsg = "No description was provided in the module manifest. The module manifest must specify a version, author and description. Run 'Test-ModuleManifest' to validate the file.";
+                        return false;
+                    }
+                    else if (psModuleInfoObj.Version == null)
+                    {
+                        errorMsg = "No version or an incorrectly formatted version was provided in the module manifest. The module manifest must specify a version, author and description. Run 'Test-ModuleManifest' to validate the file.";
+                        return false;
+                    }
+                }
+                
+                // Check for any errors from Test-ModuleManifest
                 if (pwsh.HadErrors)
                 {
-                    if (results.Any())
-                    {
-                        PSModuleInfo psModuleInfoObj = results[0].BaseObject as PSModuleInfo;
-                        if (string.IsNullOrWhiteSpace(psModuleInfoObj.Author))
-                        {
-                            errorMsg = "No author was provided in the module manifest. The module manifest must specify a version, author and description. Run 'Test-ModuleManifest' to validate the file.";
-                        }
-                        else if (string.IsNullOrWhiteSpace(psModuleInfoObj.Description))
-                        {
-                            errorMsg = "No description was provided in the module manifest. The module manifest must specify a version, author and description. Run 'Test-ModuleManifest' to validate the file.";
-                        }
-                        else if (psModuleInfoObj.Version == null)
-                        {
-                            errorMsg = "No version or an incorrectly formatted version was provided in the module manifest. The module manifest must specify a version, author and description. Run 'Test-ModuleManifest' to validate the file.";
-                        }
-                    }
-
-                    if (string.IsNullOrEmpty(errorMsg))
-                    {
-                        // Surface any inner error messages
-                        var innerErrorMsg = (pwsh.Streams.Error.Count > 0) ? pwsh.Streams.Error[0].ToString() : string.Empty;
-                        errorMsg = $"Module manifest file validation failed with error: {innerErrorMsg}. Run 'Test-ModuleManifest' to validate the module manifest.";
-                    }
-
+                    var innerErrorMsg = (pwsh.Streams.Error.Count > 0) ? pwsh.Streams.Error[0].ToString() : string.Empty;
+                    errorMsg = $"Module manifest file validation failed with error: {innerErrorMsg}. Run 'Test-ModuleManifest' to validate the module manifest.";
                     return false;
                 }
             }
@@ -1641,7 +1647,7 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
             if (input == null) {
                 throw new ArgumentNullException(nameof(input));
             }
-            
+
             SecureString secureString = new SecureString();
             foreach (char c in input)
             {
@@ -1649,7 +1655,7 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
             }
 
             secureString.MakeReadOnly();
-            
+
             return secureString;
         }
 
@@ -1706,6 +1712,16 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
             }
         }
 
+        private static void SetAttributesHelper(DirectoryInfo directory)
+        {
+            foreach (var subDirectory in directory.GetDirectories())
+            {
+                subDirectory.Attributes = FileAttributes.Normal;
+                SetAttributesHelper(subDirectory);
+            }
+
+            directory.Attributes = FileAttributes.Normal;
+        }
         /// <Summary>
         /// Deletes a directory and its contents
         /// This is a workaround for .NET Directory.Delete(), which can fail with WindowsPowerShell
@@ -1720,13 +1736,17 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
             }
 
             // Remove read only file attributes first
-            foreach (var dirFilePath in Directory.GetFiles(dirPath,"*",SearchOption.AllDirectories))
+            foreach (var dirFilePath in Directory.GetFiles(dirPath, "*", SearchOption.AllDirectories))
             {
                 if (File.GetAttributes(dirFilePath).HasFlag(FileAttributes.ReadOnly))
                 {
                     File.SetAttributes(dirFilePath, File.GetAttributes(dirFilePath) & ~FileAttributes.ReadOnly);
                 }
             }
+
+            DirectoryInfo rootDir = new DirectoryInfo(dirPath);
+            SetAttributesHelper(rootDir);
+
             // Delete directory recursive, try multiple times before throwing ( #1662 )
             int maxAttempts = 5;
             int msDelay = 5;
@@ -1734,7 +1754,7 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
             {
                 try
                 {
-                    Directory.Delete(dirPath,true);
+                    Directory.Delete(dirPath, true);
                     return;
                 }
                 catch (Exception ex)
@@ -1742,6 +1762,17 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
                     if (attempt < maxAttempts && (ex is IOException || ex is UnauthorizedAccessException))
                     {
                         Thread.Sleep(msDelay);
+                    }
+                    else if (ex is System.IO.IOException)
+                    {
+                        string psVersion = System.Management.Automation.Runspaces.Runspace.DefaultRunspace.Version.ToString();
+                        if (ex.Message.Contains("The directory is not empty") && psVersion.StartsWith("5"))
+                        {
+                            // there is a known bug with WindowsPowerShell and OneDrive based module paths, where .NET Directory.Delete() will throw a 'The directory is not empty.' error.
+                            throw new Exception(string.Format("Cannot uninstall module with OneDrive based path on Windows PowerShell due to .NET issue. Try installing and uninstalling using PowerShell 7+ if using OneDrive."), ex);
+                        }
+
+                        throw new Exception(string.Format("Access denied to path while deleting path {0}", dirPath), ex);
                     }
                     else
                     {
@@ -1816,7 +1847,7 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
             var relsDirToDelete = Path.Combine(dirNameVersion, "_rels");
             var packageDirToDelete = Path.Combine(dirNameVersion, "package");
 
-            // Unforunately have to check if each file exists because it may or may not be there
+            // Unfortunately have to check if each file exists because it may or may not be there
             if (File.Exists(nuspecToDelete))
             {
                 callingCmdlet.WriteVerbose(string.Format("Deleting '{0}'", nuspecToDelete));
@@ -2208,6 +2239,7 @@ namespace Microsoft.PowerShell.PSResourceGet.UtilClasses
             // Because authenticode and catalog verifications are only applicable on Windows, we allow all packages by default to be installed on unix systems.
             if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
+                cmdletPassedIn.WriteWarning("Authenticode check cannot be performed on Linux or MacOS.");
                 return true;
             }
 
