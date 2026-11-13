@@ -1,7 +1,9 @@
 # PowerShell Gallery Health Check
 #
-# Cheap, deterministic probe of the PowerShell Gallery endpoints that PSResourceGet depends on.
-# A probe fails only if it keeps returning 404 or 5xx across several retries. When a failure is
+# Probes the PowerShell Gallery with the same queries PSResourceGet sends for its Find-PSResource
+# tests. Search-backend queries are sampled several times and their bad responses pooled, so that a
+# single unhealthy instance behind the load balancer (which fails only a fraction of requests) is
+# still detected. When a failure is
 # confirmed, this workflow dispatches the 'psgallery-outage-reporter' agentic workflow, which
 # opens (or updates) a service-status issue in PowerShell/PowerShellGallery so the status page
 # at https://aka.ms/psgallery can be updated.
@@ -31,37 +33,68 @@ jobs:
         id: probe
         shell: pwsh
         run: |
-          $probes = [ordered]@{
-            'V2 service root'      = 'https://www.powershellgallery.com/api/v2/'
-            'Find by name'         = "https://www.powershellgallery.com/api/v2/FindPackagesById()?id='PowerShellGet'"
-            'Find specific version'= "https://www.powershellgallery.com/api/v2/Packages(Id='PowerShellGet',Version='2.2.5')"
-            'Search'               = "https://www.powershellgallery.com/api/v2/Search()?searchTerm='PSReadLine'&includePrerelease=false&`$top=1"
-            'Package download'     = 'https://www.powershellgallery.com/api/v2/package/PowerShellGet/2.2.5'
+          # Probes mirror the exact requests PSResourceGet sends for the Find-PSResource CI tests that most
+          # often fail with 500s. These OData queries ($filter/substringof on Tags, $orderby, $top=6000,
+          # items/psscript route) exercise the gallery search backend, unlike simple lookups.
+          $base = 'https://www.powershellgallery.com/api/v2'
+          function Get-QueryUri([string] $Path, [string] $Filter, [string] $Extra = '') {
+            "$base/$Path`?`$filter=$([uri]::EscapeDataString($Filter))&`$inlinecount=allpages$Extra"
           }
+          $tagPaging = '&$skip=0&$top=6000&$orderby=Id%20desc'
 
-          $maxAttempts = 3
-          $failures = @()
-          foreach ($name in $probes.Keys) {
-            $uri = $probes[$name]
-            $status = 0
-            for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
-              $status = [int](curl --silent --location --output /dev/null --max-time 60 --write-out '%{http_code}' $uri)
-              if ($status -ne 404 -and $status -lt 500) { break }
-              if ($attempt -lt $maxAttempts) { Start-Sleep -Seconds 30 }
+          # 'search' probes all hit the gallery search backend, where a single unhealthy instance behind the
+          # load balancer fails only a fraction of requests. They are sampled several times and their bad
+          # responses are pooled. Find by name sends one request (retried only on failure) to catch full outages.
+          $probes = @(
+            @{ name = 'Find by name (FindPackagesById)'; search = $false; uri = Get-QueryUri 'FindPackagesById()' "Id eq 'test_module' and IsLatestVersion eq true" "&id='test_module'" }
+            @{ name = 'Find by name glob and Type';      search = $true;  uri = Get-QueryUri 'Search()' "IsLatestVersion and startswith(Id, 'test') and substringof('PSScript', Tags) eq false" '&$skip=0&$top=100&$orderby=Id%20desc' }
+            @{ name = 'Find by tag (modules)';           search = $true;  uri = Get-QueryUri 'Search()' "IsLatestVersion and substringof('PSModule', Tags) eq true and substringof('CommandsAndResource', Tags) eq true" $tagPaging }
+            @{ name = 'Find by tag (scripts)';           search = $true;  uri = Get-QueryUri 'items/psscript/Search()' "IsLatestVersion and substringof('PSScript', Tags) eq true and substringof('Tag-Required-Script1-2.5', Tags) eq true" $tagPaging }
+            @{ name = 'Find by tag (prerelease)';        search = $true;  uri = Get-QueryUri 'Search()' "IsAbsoluteLatestVersion and substringof('PSModule', Tags) eq true and substringof('MyPSTag', Tags) eq true" "$tagPaging&includePrerelease=true" }
+          )
+
+          $searchSamples = 4          # per search probe; 4 probes x 4 = 16 pooled requests
+          $searchFailureThreshold = 2 # pooled bad responses across all search probes
+          $otherMaxAttempts = 3       # find by name stops at the first good response
+
+          $results = $probes | ForEach-Object -ThrottleLimit 6 -Parallel {
+            $probe = $_
+            $attempts = if ($probe.search) { $using:searchSamples } else { $using:otherMaxAttempts }
+            $codes = @(); $times = @(); $bad = 0
+            for ($i = 0; $i -lt $attempts; $i++) {
+              $out = curl --silent --location --output /dev/null --max-time 60 --write-out '%{http_code} %{time_total}' $probe.uri
+              $code, $time = "$out".Split(' ')
+              $code = [int]$code; $time = [double]$time
+              $codes += $code; $times += $time
+              # Only hard failures count; slow responses that eventually succeed are not reported.
+              $isBad = $code -eq 0 -or $code -eq 404 -or $code -ge 500
+              if ($isBad) { $bad++ }
+              if (-not $probe.search -and -not $isBad) { break }
             }
 
-            Write-Host "$name -> HTTP $status ($uri)"
-            if ($status -eq 404 -or $status -ge 500) {
-              $failures += [pscustomobject]@{
-                probe      = $name
-                uri        = $uri
-                statusCode = $status
-                attempts   = $maxAttempts
-                checkedAt  = (Get-Date).ToUniversalTime().ToString('o')
-              }
+            [pscustomobject]@{
+              probe          = $probe.name
+              uri            = $probe.uri
+              search         = $probe.search
+              samples        = $codes.Count
+              failures       = $bad
+              statusCodes    = ($codes | Group-Object | Sort-Object Name | ForEach-Object { "$($_.Name) x$($_.Count)" }) -join ', '
+              slowestSeconds = [math]::Round(($times | Measure-Object -Maximum).Maximum, 2)
+              checkedAt      = (Get-Date).ToUniversalTime().ToString('o')
             }
           }
 
+          foreach ($r in $results) {
+            Write-Host "$($r.probe) -> $($r.failures)/$($r.samples) bad [$($r.statusCodes)] slowest $($r.slowestSeconds)s ($($r.uri))"
+          }
+
+          $searchBad = ($results | Where-Object search | Measure-Object failures -Sum).Sum
+          Write-Host "Search backend: $searchBad bad response(s) pooled (threshold $searchFailureThreshold)"
+
+          $failures = @(@(
+            if ($searchBad -ge $searchFailureThreshold) { $results | Where-Object { $_.search -and $_.failures -gt 0 } }
+            $results | Where-Object { -not $_.search -and $_.failures -eq $_.samples }
+          ) | Select-Object -Property * -ExcludeProperty search)
           $json = if ($failures.Count) { ConvertTo-Json -InputObject $failures -Compress -Depth 3 } else { '[]' }
           "failed=$([bool]$failures.Count)".ToLower() >> $env:GITHUB_OUTPUT
           "results=$json" >> $env:GITHUB_OUTPUT
