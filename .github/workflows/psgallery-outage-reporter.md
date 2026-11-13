@@ -2,7 +2,7 @@
 description: |
   Reports PowerShell Gallery outages. Triggered by the 'PowerShell Gallery Health Check'
   workflow when gallery queries return too many 404/5xx or timed-out responses. Re-verifies the
-  failure, then opens a pull request in PowerShell/PowerShellGallery that adds an "Ongoing" entry to
+  failure, then opens a pull request in alerickson/PowerShellGallery that adds an "Ongoing" entry to
   psgallery_status.md (or comments on an existing one) for the Gallery team to review and merge.
 
 on:
@@ -32,7 +32,7 @@ network:
     - powershell
 
 checkout:
-  - repository: PowerShell/PowerShellGallery
+  - repository: alerickson/PowerShellGallery
     ref: master
     path: PowerShellGallery
     current: true
@@ -45,10 +45,10 @@ tools:
 
 safe-outputs:
   # PAT or GitHub App token with 'contents: write' and 'pull-requests: write' on
-  # PowerShell/PowerShellGallery ('issues: write' too, for comments and the issue fallback).
+  # alerickson/PowerShellGallery ('issues: write' too, for comments and the issue fallback).
   github-token: ${{ secrets.PSGALLERY_STATUS_PR_TOKEN }}
   create-pull-request:
-    target-repo: "PowerShell/PowerShellGallery"
+    target-repo: "alerickson/PowerShellGallery"
     base-branch: master
     title-prefix: "[Service Status] "
     draft: false
@@ -56,7 +56,7 @@ safe-outputs:
     max: 1
   add-comment:
     target: "*"
-    target-repo: "PowerShell/PowerShellGallery"
+    target-repo: "alerickson/PowerShellGallery"
     max: 1
 ---
 
@@ -80,7 +80,7 @@ ${{ github.event.inputs.probe_results }}
 
 Health check run: ${{ github.event.inputs.health_check_run_url }}
 
-The `PowerShell/PowerShellGallery` repository is checked out in the `PowerShellGallery` directory.
+The `alerickson/PowerShellGallery` repository is checked out in the `PowerShellGallery` directory.
 Its `psgallery_status.md` file is the public PowerShell Gallery status page.
 
 ## Steps
@@ -100,7 +100,7 @@ Its `psgallery_status.md` file is the public PowerShell Gallery status page.
    Do not second-guess whether a 404 is "expected" based on the package name.
 
 2. **Look for an existing report.**
-   - Search open pull requests in `PowerShell/PowerShellGallery` whose title starts with
+   - Search open pull requests in `alerickson/PowerShellGallery` whose title starts with
      `[Service Status]` and that were created in the last 24 hours.
    - Read `PowerShellGallery/psgallery_status.md`. If its newest entry is marked `__Status: Ongoing__`,
      is dated today or yesterday (UTC), and describes the same kind of problem (for example, search or
