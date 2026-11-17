@@ -5,7 +5,7 @@
 # single unhealthy instance behind the load balancer (which fails only a fraction of requests) is
 # still detected. When a failure is
 # confirmed, this workflow dispatches the 'psgallery-outage-reporter' agentic workflow, which opens a
-# pull request in PowerShell/PowerShellGallery adding an "Ongoing" entry to psgallery_status.md for the
+# pull request in alerickson/PowerShellGallery adding an "Ongoing" entry to psgallery_status.md for the
 # Gallery team to review and merge. Once that entry is published and the Gallery is healthy again, this
 # workflow opens a follow-up pull request marking it Resolved. Both pull requests are also announced in
 # the PowerShell Gallery team's Teams channel when PSGALLERY_TEAMS_WEBHOOK_URL is set.
@@ -131,11 +131,11 @@ jobs:
         env:
           GALLERY_TOKEN: ${{ secrets.PSGALLERY_STATUS_PR_TOKEN }}
           ACTIONS_TOKEN: ${{ github.token }}
-          STATUS_REPO: PowerShell/PowerShellGallery
+          STATUS_REPO: alerickson/PowerShellGallery
           STATUS_FILE: psgallery_status.md
           STATUS_BRANCH: master
           REPORTER_WORKFLOW: psgallery-outage-reporter.lock.yml
-          QUIET_MINUTES: '60'
+          QUIET_MINUTES: '0'
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true

@@ -30,7 +30,7 @@ on:
         description: 'Repository hosting psgallery_status.md'
         required: false
         type: string
-        default: 'PowerShell/PowerShellGallery'
+        default: 'alerickson/PowerShellGallery'
     secrets:
       webhook_url:
         description: 'Teams Workflows webhook URL for the PowerShell Gallery team channel'
