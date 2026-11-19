@@ -7,6 +7,16 @@
 #
 # The webhook URL is a secret: anyone holding it can post to the channel. It is only ever passed to
 # curl through an environment variable and is never printed. If it isn't configured, the alert is skipped.
+#
+# Setup (PSGALLERY_TEAMS_WEBHOOK_URL): in the target channel, create a workflow from the Teams template
+# "Send webhook alerts to a channel", created by an account that is a member of that team and channel.
+# Then, in Power Automate:
+#   - Open "Post card in a chat or channel" (Attachments is null > False > For each) and make sure Team
+#     and Channel are picked from the dropdowns; the template can leave them blank, which fails with
+#     UnauthorizedSenderForChannelNotification.
+#   - Saving the flow can leave it Suspended; turn it back on afterwards, or requests fail with
+#     WorkflowTriggerIsNotEnabled (the alert job only logs a warning in that case).
+#   - Copy the URL from the "When a Teams webhook request is received" trigger and store it as the secret.
 name: 'PowerShell Gallery Teams Alert'
 
 on:
